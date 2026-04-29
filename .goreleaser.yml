@@ -72,6 +72,16 @@ upx:
 notarize:
   macos: []
 
+archives:
+  - format: binary
+    name_template: >-
+      {{ .Binary }}_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}
+      _{{ .Arch }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+      {{- if .Mips }}_{{ .Mips }}{{ end }}
+
 checksum:
   name_template: "checksums.txt"
 
