@@ -1,0 +1,81 @@
+version: 2
+
+project_name: zaip
+
+builds:
+  - id: zaip-server
+    main: ./cmd/server
+    binary: zaip-server
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - mips
+      - mipsle
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
+    gomips:
+      - hardfloat
+      - softfloat
+
+  - id: zaip-client
+    main: ./cmd/client
+    binary: zaip-client
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - mips
+      - mipsle
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
+    gomips:
+      - hardfloat
+      - softfloat
+
+upx:
+  - ids:
+      - zaip-server
+      - zaip-client
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    enabled: true
+
+notarize:
+  macos: []
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  github:
+    owner: ejfkdev
+    name: zaip
