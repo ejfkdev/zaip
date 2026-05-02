@@ -35,6 +35,12 @@ https://chat.z.ai/
 zaip-client https://xxx-d.space-z.ai
 ```
 
+支持多个端点做负载均衡，自动故障转移：
+
+```bash
+zaip-client https://a-d.space-z.ai https://b-d.space-z.ai https://c-d.space-z.ai
+```
+
 6. 代理
 
 配置系统或浏览器代理为 `127.0.0.1:7890`

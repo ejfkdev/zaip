@@ -67,12 +67,12 @@ func findAvailablePort(bindAddr string, startPort int) (string, int) {
 func main() {
 	bind := flag.String("bind", "0.0.0.0", "Bind address")
 	port := flag.Int("port", 7890, "Local proxy port (auto-increments if occupied)")
-	conns := flag.Int("conns", 5, "Number of WSS connections to server")
+	conns := flag.Int("conns", 5, "Total number of WSS connections (split across servers)")
 	showVersion := flag.Bool("v", false, "Print version")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "zaip-client - WebSocket Tunnel Proxy Client  https://github.com/ejfkdev/zaip\n\n")
-		fmt.Fprintf(os.Stderr, "Usage: zaip-client [options] <server-url>\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: zaip-client [options] <server-url> [server-url...]\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nServer URL formats:\n")
@@ -83,7 +83,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
 		fmt.Fprintf(os.Stderr, "  zaip-client https://xxx-d.space-z.ai\n")
 		fmt.Fprintf(os.Stderr, "  zaip-client -port 8080 wss://example.com/tunnel\n")
-		fmt.Fprintf(os.Stderr, "  zaip-client -bind 127.0.0.1 -conns 10 example.com\n")
+		fmt.Fprintf(os.Stderr, "  zaip-client https://a.space-z.ai https://b.space-z.ai\n")
 	}
 
 	flag.Parse()
@@ -98,14 +98,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	serverURL := resolveServerURL(flag.Arg(0))
-
-	pool := tunnel.NewSessionPool(serverURL, *conns)
-	if err := pool.Start(); err != nil {
-		log.Fatalf("session pool start failed: %v", err)
+	// Resolve all server URLs
+	var serverURLs []string
+	for _, arg := range flag.Args() {
+		serverURLs = append(serverURLs, resolveServerURL(arg))
 	}
 
-	client := tunnel.NewClient(pool)
+	// Split total connections across endpoints
+	connsPerEndpoint := (*conns + len(serverURLs) - 1) / len(serverURLs)
+
+	var pools []*tunnel.SessionPool
+	for _, u := range serverURLs {
+		pool := tunnel.NewSessionPool(u, connsPerEndpoint)
+		if err := pool.Start(); err != nil {
+			log.Fatalf("session pool start failed (%s): %v", u, err)
+		}
+		pools = append(pools, pool)
+	}
+
+	client := tunnel.NewClient(pools)
 
 	listenAddr, actualPort := findAvailablePort(*bind, *port)
 	ln := proxy.NewListener(listenAddr, client)
@@ -116,7 +127,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("zaip-client %s started on :%d -> %s (conns: %d)", version, actualPort, serverURL, *conns)
+	log.Printf("zaip-client %s started on :%d -> %s (total: %d, per endpoint: %d)", version, actualPort, strings.Join(serverURLs, ", "), *conns, connsPerEndpoint)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -124,5 +135,7 @@ func main() {
 
 	log.Println("shutting down...")
 	ln.Close()
-	pool.Close()
+	for _, pool := range pools {
+		pool.Close()
+	}
 }

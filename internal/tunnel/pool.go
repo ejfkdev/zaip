@@ -23,7 +23,7 @@ type SessionPool struct {
 func NewSessionPool(serverURL string, poolSize int) *SessionPool {
 	return &SessionPool{
 		serverURL: serverURL,
-		dialer:    websocket.Dialer{HandshakeTimeout: 3 * time.Second},
+		dialer:    websocket.Dialer{HandshakeTimeout: 5 * time.Second},
 		poolSize:  poolSize,
 		conns:     make(chan *websocket.Conn, poolSize),
 		closed:    make(chan struct{}),
@@ -52,6 +52,18 @@ func (p *SessionPool) Take() (*websocket.Conn, error) {
 		return conn, nil
 	default:
 		return p.dial()
+	}
+}
+
+// Drain removes all connections from the pool (e.g. after detecting stale ones).
+func (p *SessionPool) Drain() {
+	for {
+		select {
+		case conn := <-p.conns:
+			_ = conn.Close()
+		default:
+			return
+		}
 	}
 }
 
@@ -103,7 +115,6 @@ func (p *SessionPool) refill() {
 	for {
 		conn, err := p.dial()
 		if err != nil {
-			log.Printf("pool dial failed: %v", err)
 			select {
 			case <-time.After(2 * time.Second):
 				continue
@@ -120,17 +131,20 @@ func (p *SessionPool) refill() {
 	}
 }
 
-// rotate periodically evicts one connection to prevent stale connections.
+// rotate periodically evicts connections to prevent stale connections.
 func (p *SessionPool) rotate() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			select {
-			case conn := <-p.conns:
-				_ = conn.Close()
-			default:
+			// Evict half the pool to keep connections fresh
+			for i := 0; i < (p.poolSize+1)/2; i++ {
+				select {
+				case conn := <-p.conns:
+					_ = conn.Close()
+				default:
+				}
 			}
 		case <-p.closed:
 			return

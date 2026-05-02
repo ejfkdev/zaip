@@ -4,19 +4,25 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/ejfkdev/zaip/internal/protocol"
 )
 
-// Client provides tunnel connections via a pool of WSS connections.
+// Client provides tunnel connections via multiple pools with load balancing.
 type Client struct {
-	pool *SessionPool
+	pools []*SessionPool
+	rand  *rand.Rand
 }
 
-func NewClient(pool *SessionPool) *Client {
-	return &Client{pool: pool}
+func NewClient(pools []*SessionPool) *Client {
+	return &Client{
+		pools: pools,
+		rand:  rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
 }
 
 // ProxyConn opens a tunnel and relays bidirectionally.
@@ -30,22 +36,51 @@ func (c *Client) ProxyConn(localConn net.Conn, targetAddr string, targetPort uin
 	return nil
 }
 
-// OpenTunnel takes a WSS connection, sends CONNECT, reads CONNECTED.
-// Retries once on failure.
+// OpenTunnel picks a pool randomly and tries to open a tunnel.
+// On failure, tries remaining pools (failover).
 func (c *Client) OpenTunnel(targetAddr string, targetPort uint16) (io.ReadWriteCloser, error) {
-	stream, err := c.openTunnelOnce(targetAddr, targetPort)
-	if err != nil {
-		log.Printf("tunnel attempt failed, retrying: %v", err)
-		stream, err = c.openTunnelOnce(targetAddr, targetPort)
-		if err != nil {
+	start := c.rand.Intn(len(c.pools))
+	var lastErr error
+	for i := range c.pools {
+		idx := (start + i) % len(c.pools)
+		stream, err := c.openTunnelOnPool(c.pools[idx], targetAddr, targetPort)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if isStaleError(err) {
+			c.pools[idx].Drain()
+		}
+		if isRefusedError(err) {
+			// Server refused the target, other pools will likely refuse too
 			return nil, err
 		}
 	}
-	return stream, nil
+	return nil, lastErr
 }
 
-func (c *Client) openTunnelOnce(targetAddr string, targetPort uint16) (io.ReadWriteCloser, error) {
-	conn, err := c.pool.Take()
+func (c *Client) openTunnelOnPool(pool *SessionPool, targetAddr string, targetPort uint16) (io.ReadWriteCloser, error) {
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		stream, err := c.openTunnelOnce(pool, targetAddr, targetPort)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if isStaleError(err) {
+			pool.Drain()
+			continue
+		}
+		if isRefusedError(err) {
+			return nil, err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func (c *Client) openTunnelOnce(pool *SessionPool, targetAddr string, targetPort uint16) (io.ReadWriteCloser, error) {
+	conn, err := pool.Take()
 	if err != nil {
 		return nil, fmt.Errorf("take connection: %w", err)
 	}
@@ -75,6 +110,17 @@ func (c *Client) openTunnelOnce(targetAddr string, targetPort uint16) (io.ReadWr
 	}
 
 	return ws, nil
+}
+
+func isStaleError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "1006") ||
+		strings.Contains(msg, "unexpected EOF") ||
+		strings.Contains(msg, "broken pipe")
+}
+
+func isRefusedError(err error) bool {
+	return strings.Contains(err.Error(), "connect refused")
 }
 
 func relay(conn net.Conn, stream io.ReadWriteCloser) {
